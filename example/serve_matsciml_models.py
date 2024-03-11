@@ -1,3 +1,6 @@
+import sys
+
+sys.path.append("/store/code/open-catalyst/public-repo/matsciml")
 import dgl
 import numpy as np
 import torch
@@ -59,7 +62,7 @@ if __name__ == "__main__":
     )
 
     model.load_state_dict(
-        torch.load("m3gnet.ckpt", map_location=torch.device("cpu")), strict=False
+        torch.load("m3gnet_2.pt", map_location=torch.device("cpu")), strict=False
     )
 
     server = M3GNetServer(model=model, configuration="kusp_config.yaml")
