@@ -2,17 +2,35 @@ import sys
 
 sys.path.append("/store/code/open-catalyst/public-repo/matsciml")
 
-import dgl
 import numpy as np
 import torch
 from ase import Atoms
-from matsciml.datasets.utils import element_types
+from dgl import DGLGraph
+from kusp import KUSPServer
+from matsciml.datasets import MaterialsProjectDataset
+from matsciml.datasets.transforms import (
+    MGLDataTransform,
+    PeriodicPropertiesTransform,
+    PointCloudToGraphTransform,
+)
+from matsciml.datasets.utils import concatenate_keys, element_types
 from matsciml.lightning.data_utils import MatSciMLDataModule
-from matsciml.models import M3GNet
+from matsciml.models import FAENet, M3GNet
 from matsciml.models.base import ScalarRegressionTask
 from pymatgen.io.ase import AseAtomsAdaptor
+from torch_geometric.data import Data as PyGGraph
 
-from kusp import KUSPServer
+
+class PyMatGenDataset(MaterialsProjectDataset):
+    def data_converter(self, config):
+        pymatgen_structure = AseAtomsAdaptor.get_structure(config)
+        data = {"structure": pymatgen_structure}
+        return_dict = {}
+        self._parse_structure(data, return_dict)
+        for transform in self.transforms:
+            return_dict = transform(return_dict)
+        return_dict = self.collate_fn([return_dict])
+        return return_dict
 
 
 def raw_data_to_atoms(species, pos, contributing, cell, elem_map):
@@ -24,51 +42,13 @@ def raw_data_to_atoms(species, pos, contributing, cell, elem_map):
     return atoms
 
 
-def dgl_from_coords(conf: Atoms, cutoff=6.0):
-    pymat_conf = AseAtomsAdaptor.get_structure(conf)
-    pos = torch.as_tensor(conf.get_positions()).to(torch.float)
-    pos.requires_grad_(True)
-    cell = conf.get_cell()[:]
-    cell = torch.as_tensor(cell)
-    from_edge, to_edge, offset, bond_lengths = pymat_conf.get_neighbor_list(
-        r=cutoff, exclude_self=True
-    )
-    offset = torch.as_tensor(offset)
-    bond_lengths = torch.as_tensor(bond_lengths)
-    offshift = offset @ cell
-
-    bond_vecs = pos[from_edge] - pos[to_edge]
-    shifted_bond_vecs = bond_vecs - offshift
-
-    graph = dgl.graph(np.array([from_edge, to_edge]).T.tolist())
-    cells = torch.ones((len(from_edge), 3, 3))
-    cells *= cell
-
-    g = {}
-
-    graph.ndata["node_type"] = torch.tensor(
-        list(map(lambda x: x - 1, pymat_conf.atomic_numbers))
-    ).to(int)
-    graph.ndata["atomic_numbers"] = torch.LongTensor(pymat_conf.atomic_numbers).to(int)
-    graph.ndata["pos"] = pos
-    graph.edata["pbc_offset"] = offset.to(torch.float)
-    graph.edata["pbc_offshift"] = offshift.to(torch.float)
-    graph.edata["lattice"] = cells
-    graph.edata["bond_vec"] = shifted_bond_vecs
-    graph.edata["bond_dist"] = bond_lengths
-
-    g["graph"] = graph
-    g["atomic_numbers"] = torch.LongTensor(pymat_conf.atomic_numbers).to(int)
-    return g
-
-
 #########################################################################
 #### Server
 #########################################################################
 
 
-class M3GNetServer(KUSPServer):
-    def __init__(self, model, configuration):
+class MatSciMLModelServer(KUSPServer):
+    def __init__(self, model, dataset, configuration):
         super().__init__(model, configuration)
         self.cutoff = self.global_information.get("cutoff", 6.0)
         self.elem_map = self.global_information.get("elements")
@@ -83,21 +63,37 @@ class M3GNetServer(KUSPServer):
             self.cell = np.array(self.cell)
         self.n_atoms = -1
         self.config = None
+        self.dataset = generic_dataset
 
     def prepare_model_inputs(self, atomic_numbers, positions, contributing_atoms):
         self.n_atoms = atomic_numbers.shape[0]
+
         config = raw_data_to_atoms(
             atomic_numbers, positions, contributing_atoms, self.cell, self.elem_map
         )
-        self.graph_in = dgl_from_coords(config, cutoff=self.cutoff)
+        data = self.dataset.data_converter(config)
+        self.batch_in = data
         self.config = config
-        self.graph_in["graph"].ndata["pos"].requires_grad_(True)
-        return {"batch": self.graph_in}
+        if isinstance(self.batch_in["graph"], DGLGraph):
+            self.batch_in["graph"].ndata["pos"].requires_grad_(True)
+        elif isinstance(self.batch_in["graph"], PyGGraph):
+            self.batch_in["graph"].pos.requires_grad_(True)
+        else:
+            raise TypeError(
+                f"This graph typ is not supported {type(self.batch_in['graph'])}."
+            )
+        return {"batch": self.batch_in}
 
     def prepare_model_outputs(self, energies):
         energy = energies["energy_total"]
-        energy.backward()
-        forces_contributing = -1 * self.graph_in["graph"].ndata["pos"].grad
+        import pdb
+
+        pdb.set_trace()
+        if isinstance(self.batch_in["graph"], DGLGraph):
+            pos = self.batch_in["graph"].ndata["pos"]
+        elif isinstance(self.batch_in["graph"], PyGGraph):
+            pos = self.batch_in["graph"].pos
+        forces_contributing = -1 * pos.grad
         forces = np.zeros((self.n_atoms, 3))
         forces[: forces_contributing.shape[0], :] = (
             forces_contributing.double().detach().numpy()
@@ -121,5 +117,20 @@ if __name__ == "__main__":
         torch.load("m3gnet_2.pt", map_location=torch.device("cpu")), strict=False
     )
 
-    server = M3GNetServer(model=model, configuration="kusp_config.yaml")
+    generic_dataset = PyMatGenDataset(
+        "./empty_lmdb",
+        transforms=[
+            PeriodicPropertiesTransform(cutoff_radius=6.5, adaptive_cutoff=True),
+            PointCloudToGraphTransform(
+                "dgl",
+                cutoff_dist=20.0,
+                node_keys=["pos", "atomic_numbers"],
+            ),
+            MGLDataTransform(),
+        ],
+    )
+
+    server = MatSciMLModelServer(
+        model=model, dataset=generic_dataset, configuration="kusp_config.yaml"
+    )
     server.serve()
