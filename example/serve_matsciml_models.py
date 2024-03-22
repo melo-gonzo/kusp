@@ -16,7 +16,7 @@ from matsciml.datasets.transforms import (
 from matsciml.datasets.utils import concatenate_keys, element_types
 from matsciml.lightning.data_utils import MatSciMLDataModule
 from matsciml.models import FAENet, M3GNet
-from matsciml.models.base import ScalarRegressionTask
+from matsciml.models.base import ScalarRegressionTask, ForceRegressionTask
 from pymatgen.io.ase import AseAtomsAdaptor
 from torch_geometric.data import Data as PyGGraph
 
@@ -74,33 +74,16 @@ class MatSciMLModelServer(KUSPServer):
         data = self.dataset.data_converter(config)
         self.batch_in = data
         self.config = config
-        if isinstance(self.batch_in["graph"], DGLGraph):
-            self.batch_in["graph"].ndata["pos"].requires_grad_(True)
-        elif isinstance(self.batch_in["graph"], PyGGraph):
-            self.batch_in["graph"].pos.requires_grad_(True)
-        else:
-            raise TypeError(
-                f"This graph typ is not supported {type(self.batch_in['graph'])}."
-            )
         return {"batch": self.batch_in}
 
-    def prepare_model_outputs(self, energies):
-        energy = energies["energy_total"]
-        if isinstance(self.batch_in["graph"], DGLGraph):
-            pos = self.batch_in["graph"].ndata["pos"]
-        elif isinstance(self.batch_in["graph"], PyGGraph):
-            pos = self.batch_in["graph"].pos
-        forces_contributing = -1 * pos.grad
-        forces = np.zeros((self.n_atoms, 3))
-        forces[: forces_contributing.shape[0], :] = (
-            forces_contributing.double().detach().numpy()
-        )
-        energy = energy.double().squeeze().detach().numpy()
-        return {"energy": energy, "forces": forces}
+    def prepare_model_outputs(self, outputs):
+        energy = outputs['energy'].double().squeeze().detach().numpy()
+        force = outputs['force'].double().squeeze().detach().numpy()
+        return {"energy": energy, "forces": force}
 
 
 if __name__ == "__main__":
-    model = ScalarRegressionTask(
+    model = ForceRegressionTask(
         encoder_class=M3GNet,
         encoder_kwargs={
             "element_types": element_types(),
