@@ -1,6 +1,7 @@
 import sys
 
 sys.path.append("/store/code/open-catalyst/public-repo/matsciml")
+import argparse
 
 import numpy as np
 import torch
@@ -9,6 +10,9 @@ from dgl import DGLGraph
 from kusp import KUSPServer
 from matsciml.datasets import MaterialsProjectDataset
 from matsciml.datasets.transforms import (
+    DistancesTransform,
+    FrameAveraging,
+    GraphVariablesTransform,
     MGLDataTransform,
     PeriodicPropertiesTransform,
     PointCloudToGraphTransform,
@@ -16,7 +20,7 @@ from matsciml.datasets.transforms import (
 from matsciml.datasets.utils import concatenate_keys, element_types
 from matsciml.lightning.data_utils import MatSciMLDataModule
 from matsciml.models import FAENet, M3GNet
-from matsciml.models.base import ScalarRegressionTask, ForceRegressionTask
+from matsciml.models.base import ForceRegressionTask, ScalarRegressionTask
 from pymatgen.io.ase import AseAtomsAdaptor
 from torch_geometric.data import Data as PyGGraph
 
@@ -77,38 +81,73 @@ class MatSciMLModelServer(KUSPServer):
         return {"batch": self.batch_in}
 
     def prepare_model_outputs(self, outputs):
-        energy = outputs['energy'].double().squeeze().detach().numpy()
-        force = outputs['force'].double().squeeze().detach().numpy()
+        energy = outputs["energy"].double().squeeze().detach().numpy()
+        force = outputs["force"].double().squeeze().detach().numpy()
         return {"energy": energy, "forces": force}
 
 
 if __name__ == "__main__":
-    model = ForceRegressionTask(
-        encoder_class=M3GNet,
-        encoder_kwargs={
-            "element_types": element_types(),
-            "return_all_layer_output": True,
-        },
-        output_kwargs={"lazy": False, "input_dim": 64, "hidden_dim": 64},
-        task_keys=["energy_total"],
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", "-m", default="m3gnet", help="Model to run")
+    args = parser.parse_args()
+    if args.model == "m3gnet":
+        model = ForceRegressionTask(
+            encoder_class=M3GNet,
+            encoder_kwargs={
+                "element_types": element_types(),
+                "return_all_layer_output": True,
+            },
+            output_kwargs={"lazy": False, "input_dim": 64, "hidden_dim": 64},
+            task_keys=["energy_total"],
+        )
 
-    model.load_state_dict(
-        torch.load("m3gnet_2.pt", map_location=torch.device("cpu")), strict=False
-    )
+        model.load_state_dict(
+            torch.load("m3gnet_2.pt", map_location=torch.device("cpu")), strict=False
+        )
 
-    generic_dataset = PyMatGenDataset(
-        "./empty_lmdb",
-        transforms=[
-            PeriodicPropertiesTransform(cutoff_radius=6.5, adaptive_cutoff=True),
-            PointCloudToGraphTransform(
-                "dgl",
-                cutoff_dist=20.0,
-                node_keys=["pos", "atomic_numbers"],
-            ),
-            MGLDataTransform(),
-        ],
-    )
+        generic_dataset = PyMatGenDataset(
+            "./empty_lmdb",
+            transforms=[
+                PeriodicPropertiesTransform(cutoff_radius=6.5, adaptive_cutoff=True),
+                PointCloudToGraphTransform(
+                    "dgl",
+                    cutoff_dist=20.0,
+                    node_keys=["pos", "atomic_numbers"],
+                ),
+                MGLDataTransform(),
+            ],
+        )
+    if args.model == "faenet":
+        model = ForceRegressionTask(
+            encoder_class=FAENet,
+            encoder_kwargs={
+                "average_frame_embeddings": False,
+                "pred_as_dict": False,
+                "hidden_dim": 128,
+                "out_dim": 128,
+                "tag_hidden_channels": 0,
+            },
+            output_kwargs={"lazy": False, "input_dim": 128, "hidden_dim": 128},
+            task_keys=["energy_total"],
+        )
+
+        model.load_state_dict(
+            torch.load("faenet_force.ckpt", map_location=torch.device("cpu")),
+            strict=False,
+        )
+
+        generic_dataset = PyMatGenDataset(
+            "./empty_lmdb",
+            transforms=[
+                PeriodicPropertiesTransform(cutoff_radius=6.5, adaptive_cutoff=True),
+                PointCloudToGraphTransform(
+                    "pyg",
+                    cutoff_dist=20.0,
+                    node_keys=["pos", "atomic_numbers"],
+                ),
+                FrameAveraging(frame_averaging="3D", fa_method="stochastic"),
+            ],
+        )
 
     server = MatSciMLModelServer(
         model=model, dataset=generic_dataset, configuration="kusp_config.yaml"
