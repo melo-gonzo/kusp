@@ -86,9 +86,6 @@ class MatSciMLModelServer(KUSPServer):
 
     def prepare_model_outputs(self, energies):
         energy = energies["energy_total"]
-        import pdb
-
-        pdb.set_trace()
         if isinstance(self.batch_in["graph"], DGLGraph):
             pos = self.batch_in["graph"].ndata["pos"]
         elif isinstance(self.batch_in["graph"], PyGGraph):
