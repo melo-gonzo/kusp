@@ -1,6 +1,6 @@
 import sys
 
-sys.path.append("/store/code/open-catalyst/public-repo/matsciml")
+sys.path.append("/store/code/ai4science/matsciml")
 import argparse
 
 import numpy as np
@@ -87,67 +87,35 @@ class MatSciMLModelServer(KUSPServer):
 
 
 if __name__ == "__main__":
+    import sys
+
+    sys.path.append("/store/code/ai4science/matsciml")
+    from matsciml_configs.models import available_models
+    from matsciml_configs.data import transforms
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", "-m", default="m3gnet", help="Model to run")
+    parser.add_argument(
+        "--checkpoint-path",
+        "-c",
+        default="./checkpoints/m3gnet.pt",
+        help="Model to run",
+    )
+    
     args = parser.parse_args()
-    if args.model == "m3gnet":
-        model = ForceRegressionTask(
-            encoder_class=M3GNet,
-            encoder_kwargs={
-                "element_types": element_types(),
-                "return_all_layer_output": True,
-            },
-            output_kwargs={"lazy": False, "input_dim": 64, "hidden_dim": 64},
-            task_keys=["energy_total"],
-        )
+    model = ForceRegressionTask(**available_models[args.model])
+    model.load_state_dict(
+        torch.load(args.checkpoint_path, map_location=torch.device("cpu")), strict=False
+    )
 
-        model.load_state_dict(
-            torch.load("m3gnet_2.pt", map_location=torch.device("cpu")), strict=False
-        )
+    import pdb; pdb.set_trace()
+    transforms = transforms[args.model]
+    # Need to change cutoff radius due to how lattice is configured in KUSP
+    for transform in transforms:
+        if isinstance(transform, PeriodicPropertiesTransform):
+            transforms[0].cutoff_radius = 1e5
 
-        generic_dataset = PyMatGenDataset(
-            "./empty_lmdb",
-            transforms=[
-                PeriodicPropertiesTransform(cutoff_radius=6.5, adaptive_cutoff=True),
-                PointCloudToGraphTransform(
-                    "dgl",
-                    cutoff_dist=20.0,
-                    node_keys=["pos", "atomic_numbers"],
-                ),
-                MGLDataTransform(),
-            ],
-        )
-    if args.model == "faenet":
-        model = ForceRegressionTask(
-            encoder_class=FAENet,
-            encoder_kwargs={
-                "average_frame_embeddings": False,
-                "pred_as_dict": False,
-                "hidden_dim": 128,
-                "out_dim": 128,
-                "tag_hidden_channels": 0,
-            },
-            output_kwargs={"lazy": False, "input_dim": 128, "hidden_dim": 128},
-            task_keys=["energy_total"],
-        )
-
-        model.load_state_dict(
-            torch.load("faenet_force.ckpt", map_location=torch.device("cpu")),
-            strict=False,
-        )
-
-        generic_dataset = PyMatGenDataset(
-            "./empty_lmdb",
-            transforms=[
-                PeriodicPropertiesTransform(cutoff_radius=6.5, adaptive_cutoff=True),
-                PointCloudToGraphTransform(
-                    "pyg",
-                    cutoff_dist=20.0,
-                    node_keys=["pos", "atomic_numbers"],
-                ),
-                FrameAveraging(frame_averaging="3D", fa_method="stochastic"),
-            ],
-        )
+    generic_dataset = PyMatGenDataset("./empty_lmdb", transforms=transforms)
 
     server = MatSciMLModelServer(
         model=model, dataset=generic_dataset, configuration="kusp_config.yaml"
