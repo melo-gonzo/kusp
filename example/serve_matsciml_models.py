@@ -100,12 +100,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--checkpoint-path",
         "-c",
-        default="./checkpoints/m3gnet.pt",
+        default=None,
         help="Model to run",
     )
     
     args = parser.parse_args()
     model = ForceRegressionTask(**available_models[args.model])
+    if args.checkpoint_path is None:
+        args.checkpoint_path = f"./checkpoints/{args.model}.ckpt"
     model.load_state_dict(
         torch.load(args.checkpoint_path, map_location=torch.device("cpu")), strict=False
     )
