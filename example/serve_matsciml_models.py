@@ -70,8 +70,6 @@ class MatSciMLModelServer(KUSPServer):
         self.dataset = generic_dataset
 
     def prepare_model_inputs(self, atomic_numbers, positions, contributing_atoms):
-        self.graph_in = sampler.grab_sample()
-        atomic_numbers = self.graph_in["graph"].ndata["atomic_numbers"]
         self.n_atoms = atomic_numbers.shape[0]
 
         config = raw_data_to_atoms(
