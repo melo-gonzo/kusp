@@ -110,7 +110,6 @@ if __name__ == "__main__":
         torch.load(args.checkpoint_path, map_location=torch.device("cpu")), strict=False
     )
 
-    import pdb; pdb.set_trace()
     transforms = transforms[args.model]
     # Need to change cutoff radius due to how lattice is configured in KUSP
     for transform in transforms:
