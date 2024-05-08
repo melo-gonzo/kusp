@@ -1,6 +1,7 @@
 import sys
 
-sys.path.append("/store/code/open-catalyst/public-repo/matsciml")
+sys.path.append("/store/code/ai4science/matsciml")
+sys.path.append("/store/code/ai4science/kusp")
 
 import numpy as np
 from ase import Atoms, io
